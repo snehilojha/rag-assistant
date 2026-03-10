@@ -5,3 +5,4 @@ structure
 eval/
 .venv/
 .env
+run.bat
