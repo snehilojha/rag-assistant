@@ -7,5 +7,5 @@ eval/
 .env
 run.bat
 context.md
+check_chunks.py
 next_plan.md
-ingest.py
