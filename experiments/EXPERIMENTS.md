@@ -40,7 +40,7 @@ Determine the optimal chunk size for text splitting to maximize retrieval qualit
 - **Trade-off**: Larger chunks may include some irrelevant information, but benefits outweigh costs
 
 **Why not go even larger?**
-- Model max sequence length constraints (512 tokens for MPNet)
+- Model max sequence length constraints (384 tokens for MPNet)
 - Increased noise in retrieved context
 - Slower embedding generation
 - Diminishing returns observed

@@ -6,3 +6,6 @@ eval/
 .venv/
 .env
 run.bat
+context.md
+next_plan.md
+ingest.py
