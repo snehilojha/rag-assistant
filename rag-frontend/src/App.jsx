@@ -1,6 +1,93 @@
 import { useState, useRef, useEffect } from "react";
 
 const API_URL = "http://localhost:8000/ask";
+const BOOKS_URL = "http://localhost:8000/books";
+
+function BookSelector({ books, selected, onChange }) {
+  /**
+   * Pill/chip selector for filtering which books to query.
+   * selected: array of slugs. Empty array = all books.
+   * Clicking a chip toggles it. "All" chip clears selection.
+   */
+  const allActive = selected.length === 0;
+
+  const toggle = (slug) => {
+    if (selected.includes(slug)) {
+      onChange(selected.filter((s) => s !== slug));
+    } else {
+      onChange([...selected, slug]);
+    }
+  };
+
+  const chipBase = {
+    fontFamily: "'Space Mono', monospace",
+    fontSize: "10px",
+    letterSpacing: "0.8px",
+    textTransform: "uppercase",
+    padding: "5px 12px",
+    borderRadius: "20px",
+    border: "1px solid",
+    cursor: "pointer",
+    background: "none",
+    transition: "all 0.18s",
+    whiteSpace: "nowrap",
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: "8px",
+        flexWrap: "wrap",
+        alignItems: "center",
+        marginBottom: "10px",
+      }}
+    >
+      <span
+        style={{
+          fontFamily: "'Space Mono', monospace",
+          fontSize: "9px",
+          color: "#484f58",
+          letterSpacing: "1.5px",
+          textTransform: "uppercase",
+          flexShrink: 0,
+        }}
+      >
+        Sources:
+      </span>
+      {/* All chip */}
+      <button
+        onClick={() => onChange([])}
+        style={{
+          ...chipBase,
+          borderColor: allActive ? "#64ffda" : "#30363d",
+          color: allActive ? "#64ffda" : "#484f58",
+          background: allActive ? "rgba(100,255,218,0.07)" : "none",
+        }}
+      >
+        All
+      </button>
+      {books.map((book) => {
+        const active = selected.includes(book.slug);
+        return (
+          <button
+            key={book.slug}
+            onClick={() => toggle(book.slug)}
+            title={`${book.title} — ${book.author}`}
+            style={{
+              ...chipBase,
+              borderColor: active ? "#64ffda" : "#30363d",
+              color: active ? "#64ffda" : "#484f58",
+              background: active ? "rgba(100,255,218,0.07)" : "none",
+            }}
+          >
+            {book.title}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function TypingIndicator() {
   return (
@@ -168,7 +255,7 @@ export default function App() {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      content: "Ask me anything from Data Science from Scratch by Joel Grus. I'll retrieve relevant passages and answer from the book.",
+      content: "Ask me anything from the indexed books. Select a source chip to narrow your query, or leave All active to search across everything.",
       chunks: [],
     },
   ]);
@@ -176,12 +263,23 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [drawerChunks, setDrawerChunks] = useState([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [books, setBooks] = useState([]);
+  const [selectedBooks, setSelectedBooks] = useState([]);
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  useEffect(() => {
+    fetch(BOOKS_URL)
+      .then((r) => r.json())
+      .then((data) => setBooks(data))
+      .catch(() => {
+        /* silently degrade — chips just won't appear */
+      });
+  }, []);
 
   const handleShowChunks = (chunks) => {
     setDrawerChunks(chunks);
@@ -200,7 +298,10 @@ export default function App() {
       const res = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: query }),
+        body: JSON.stringify({
+          question: query,
+          sources: selectedBooks.length > 0 ? selectedBooks : null,
+        }),
       });
       const data = await res.json();
       setMessages((prev) => [
@@ -343,6 +444,15 @@ export default function App() {
           background: "linear-gradient(to top, #010409 60%, transparent)",
         }}
       >
+        <div style={{ maxWidth: "760px", margin: "0 auto" }}>
+        {books.length > 0 && (
+          <BookSelector
+            books={books}
+            selected={selectedBooks}
+            onChange={setSelectedBooks}
+          />
+        )}
+        </div>
         <div
           style={{
             maxWidth: "760px",
