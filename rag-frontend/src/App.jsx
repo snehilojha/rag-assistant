@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const API_URL = "http://localhost:8000/ask";
 const BOOKS_URL = "http://localhost:8000/books";
@@ -155,24 +157,36 @@ function ChunkDrawer({ chunks, open, onClose }) {
         </button>
       </div>
       <div style={{ overflowY: "auto", flex: 1, padding: "16px 24px", display: "flex", flexDirection: "column", gap: "16px" }}>
-        {chunks.map((chunk, i) => (
-          <div
-            key={i}
-            style={{
-              background: "#161b22",
-              border: "1px solid #21262d",
-              borderRadius: "8px",
-              padding: "14px",
-            }}
-          >
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "10px", color: "#64ffda", marginBottom: "8px", opacity: 0.7 }}>
-              CHUNK {i + 1}
+        {chunks.map((chunk, i) => {
+          const text = typeof chunk === "object" ? chunk.text : chunk;
+          const book = typeof chunk === "object" ? chunk.book : null;
+          const page = typeof chunk === "object" ? chunk.page : null;
+          return (
+            <div
+              key={i}
+              style={{
+                background: "#161b22",
+                border: "1px solid #21262d",
+                borderRadius: "8px",
+                padding: "14px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "8px" }}>
+                <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "10px", color: "#64ffda", opacity: 0.7 }}>
+                  CHUNK {i + 1}
+                </span>
+                {(book || page != null) && (
+                  <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", color: "#484f58", letterSpacing: "0.5px" }}>
+                    {book && <span>{book}</span>}{book && page != null && " · "}{page != null && <span>p. {page}</span>}
+                  </span>
+                )}
+              </div>
+              <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", color: "#8b949e", lineHeight: 1.7, margin: 0 }}>
+                {text}
+              </p>
             </div>
-            <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", color: "#8b949e", lineHeight: 1.7, margin: 0 }}>
-              {chunk}
-            </p>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -212,18 +226,26 @@ function Message({ msg, onShowChunks }) {
           padding: "14px 18px",
         }}
       >
-        <p
-          style={{
-            fontFamily: "'IBM Plex Sans', sans-serif",
-            fontSize: "14px",
-            color: isUser ? "#aff5c0" : "#c9d1d9",
-            lineHeight: 1.75,
-            margin: 0,
-            whiteSpace: "pre-wrap",
-          }}
-        >
-          {msg.content}
-        </p>
+        {isUser ? (
+          <p
+            style={{
+              fontFamily: "'IBM Plex Sans', sans-serif",
+              fontSize: "14px",
+              color: "#aff5c0",
+              lineHeight: 1.75,
+              margin: 0,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {msg.content}
+          </p>
+        ) : (
+          <div className="md-prose">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {msg.content}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
       {!isUser && msg.chunks && msg.chunks.length > 0 && (
         <button
@@ -349,6 +371,18 @@ export default function App() {
         ::-webkit-scrollbar-thumb { background: #21262d; border-radius: 2px; }
         textarea:focus { outline: none; }
         textarea { resize: none; }
+        .md-prose { font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; color: #c9d1d9; line-height: 1.75; }
+        .md-prose p { margin: 0 0 10px 0; }
+        .md-prose p:last-child { margin-bottom: 0; }
+        .md-prose h1, .md-prose h2, .md-prose h3 { font-family: 'Space Mono', monospace; color: #64ffda; margin: 16px 0 8px; font-size: 13px; letter-spacing: 0.5px; }
+        .md-prose ul, .md-prose ol { padding-left: 20px; margin: 6px 0 10px; }
+        .md-prose li { margin-bottom: 4px; }
+        .md-prose code { font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 1px 5px; color: #79c0ff; }
+        .md-prose pre { background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 14px; overflow-x: auto; margin: 10px 0; }
+        .md-prose pre code { background: none; border: none; padding: 0; color: #c9d1d9; font-size: 12px; }
+        .md-prose strong { color: #e6edf3; font-weight: 600; }
+        .md-prose em { color: #8b949e; }
+        .md-prose blockquote { border-left: 3px solid #30363d; padding-left: 12px; margin: 8px 0; color: #8b949e; }
       `}</style>
 
       {/* Header */}
