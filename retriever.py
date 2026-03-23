@@ -1,57 +1,152 @@
-"""Retrieve relevant text chunks using FAISS vector similarity search.
-
-This module handles the online retrieval phase of the RAG pipeline:
-1. Load pre-built FAISS index and chunk data from disk
-2. Embed user query using the same model as indexing
-3. Perform similarity search to find top-K most relevant chunks
-4. Return original text chunks for LLM context
-"""
-
-import faiss
+import os
 import json
-import numpy as np
+from typing import Dict, List, Optional
+import faiss
+from sentence_transformers import SentenceTransformer
 
-def retrieve(query: str, chunk_size: int, model, k: int = 5) -> list[str]:
-    """Retrieve top-K most relevant text chunks for a given query.
-    
-    Uses FAISS inner product search to find chunks with highest semantic similarity
-    to the query. The same embedding model must be used for both indexing and retrieval
-    to ensure embedding space consistency.
-    
-    Args:
-        query: User's natural language question
-        chunk_size: Which chunk size index to use (128, 256, or 384)
-        model: SentenceTransformer model (must match the one used in indexing)
-        k: Number of top chunks to retrieve (default: 5)
-    
-    Returns:
-        List of k text chunks, ordered by relevance (highest similarity first)
-    
-    Note:
-        FAISS returns indices into the original chunk array. We use these indices
-        to retrieve the actual text chunks from the JSON file.
+
+# ----------------------------
+# Load all indices
+# ----------------------------
+
+def load_all_indices(store_dir: str) -> Dict[str, Dict]:
     """
-    # Load pre-built FAISS index from disk
-    faiss_index = faiss.read_index(f"store/faiss_{chunk_size}.index")
-    # Load corresponding text chunks
-    with open(f"store/chunks_{chunk_size}.json", "r") as f:
-        chunk_data = json.load(f)
-    # Embed the query using the same model as indexing
-    embedded_query = model.encode([query])
-    # Ensure float32 for FAISS compatibility
-    embedded_query = embedded_query.astype(np.float32)
-    # Search for k nearest neighbors (highest inner product = most similar)
-    distances, indices = faiss_index.search(embedded_query, k)
-    # Return the actual text chunks (indices[0] because we only have 1 query)
-    return [chunk_data[i] for i in indices[0]]
+    Loads all per-book indices and sets nprobe properly.
 
-if __name__ == "__main__":
-    # Test retrieval with a sample query
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer("all-mpnet-base-v2")
+    Returns:
+    {
+      slug: {
+        "index": faiss.Index,
+        "chunks": List[dict],
+        "meta": dict
+      }
+    }
+    """
+    indices = {}
 
-    # Retrieve top-5 chunks for a test question
-    results = retrieve("what is gradient descent?", 128, model)
-    for i, chunk in enumerate(results):
-        print(f"\n--- Chunk {i+1} ---")
-        print(chunk)
+    registry_path = os.path.join(store_dir, "registry.json")
+    if not os.path.exists(registry_path):
+        raise FileNotFoundError("registry.json not found")
+
+    with open(registry_path, "r", encoding="utf-8") as f:
+        registry = json.load(f)
+
+    for entry in registry:
+        slug = entry["slug"]
+        base = os.path.join(store_dir, slug)
+
+        index_path = os.path.join(base, "faiss.index")
+        chunks_path = os.path.join(base, "chunks.json")
+        meta_path = os.path.join(base, "meta.json")
+
+        if not (os.path.exists(index_path) and os.path.exists(chunks_path)):
+            continue
+
+        index = faiss.read_index(index_path)
+
+        with open(chunks_path, "r", encoding="utf-8") as f:
+            chunks = json.load(f)
+
+        meta = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+        indices[slug] = {
+            "index": index,
+            "chunks": chunks,
+            "meta": meta
+        }
+
+    return indices
+
+
+# ----------------------------
+# Retrieve with RRF
+# ----------------------------
+
+def retrieve(
+    query: str,
+    model: SentenceTransformer,
+    indices: Dict[str, Dict],
+    sources: Optional[List[str]] = None,
+    top_k: int = 5,
+    k: int = 60
+) -> List[dict]:
+    """
+    Multi-index retrieval + RRF fusion.
+    Returns full chunk dicts.
+    """
+
+    if not indices:
+        return []
+
+    # validate sources
+    if sources:
+        selected = {}
+        for s in sources:
+            if s not in indices:
+                raise ValueError(f"Unknown source: {s}")
+            selected[s] = indices[s]
+    else:
+        selected = indices
+
+    # BGE requires query prefix
+    query_text = f"Represent this sentence for searching relevant passages: {query}"
+
+    query_vec = model.encode(
+        [query_text],
+        convert_to_numpy=True,
+        normalize_embeddings=True
+    )
+
+    per_index_results = []
+
+    # ----------------------------
+    # Per-index retrieval
+    # ----------------------------
+    for slug, data in selected.items():
+        index = data["index"]
+        chunks = data["chunks"]
+        fetch_k = min(top_k * 3, index.ntotal)
+
+        faiss_scores, ids = index.search(query_vec, fetch_k)
+
+        results = []
+        for rank, idx in enumerate(ids[0], start=1):
+            if idx == -1:
+                continue
+
+            chunk = chunks[idx]
+
+            # attach rank for RRF (optional but explicit)
+            results.append({
+                "chunk": chunk,
+                "rank": rank
+            })
+
+        per_index_results.append(results)
+
+    # ----------------------------
+    # RRF merge
+    # ----------------------------
+    scores = {}
+    meta = {}
+
+    for results in per_index_results:
+        for item in results:
+            chunk = item["chunk"]
+            rank = item["rank"]
+
+            cid = chunk["chunk_id"]
+
+            if cid not in scores:
+                scores[cid] = 0.0
+                meta[cid] = chunk
+
+            scores[cid] += 1.0 / (k + rank)
+
+    # sort by fused score
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    return [meta[cid] for cid, _ in ranked[:top_k]]
