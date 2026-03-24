@@ -4,7 +4,7 @@ import json
 import os
 from sentence_transformers import SentenceTransformer
 from build_index import extract_text_from_pdf, clean_text, chunk_text, build_and_save_index
-from evaluate import evaluate, load_questions
+from evaluate import load_questions
 
 # Configuration
 PDF_PATH = "data/Data Science from Scratch by Joel Grus.pdf"
@@ -65,16 +65,26 @@ def run_overlap_experiment(overlap: int, model, questions):
     p5_scores = []
     rr_scores = []
     
-    from evaluate import chunk_matches, reciprocal_rank
-    
+    def _matches(text: str, keywords: list) -> bool:
+        """Check if all keywords appear in text (old-schema: chunks are plain strings)."""
+        t = text.lower()
+        return all(kw.lower() in t for kw in keywords)
+
+    def _rr(results: list, keywords: list) -> float:
+        """Reciprocal rank over plain-string chunks."""
+        for i, text in enumerate(results):
+            if _matches(text, keywords):
+                return 1.0 / (i + 1)
+        return 0.0
+
     for question in questions:
         query = question["question"]
         keywords = question["keywords"]
         results = retrieve_custom(query, CHUNK_SIZE, model)
-        p1_scores.append(1.0 if chunk_matches(results[0], keywords) else 0.0)
-        p3_scores.append(1.0 if any(chunk_matches(result, keywords) for result in results[:3]) else 0.0)
-        p5_scores.append(1.0 if any(chunk_matches(result, keywords) for result in results[:5]) else 0.0)
-        rr_scores.append(reciprocal_rank(results, keywords))
+        p1_scores.append(1.0 if results and _matches(results[0], keywords) else 0.0)
+        p3_scores.append(1.0 if any(_matches(r, keywords) for r in results[:3]) else 0.0)
+        p5_scores.append(1.0 if any(_matches(r, keywords) for r in results[:5]) else 0.0)
+        rr_scores.append(_rr(results, keywords))
     
     result = {
         'overlap': overlap,

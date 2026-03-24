@@ -36,7 +36,7 @@ def generate_slug(name: str) -> str:
 def load_and_extract(pdf_path: str, start: int = None, end: int = None) -> List[Page]:
     """
     Extract raw text per page from PDF.
-    page indices are 0-based (fitz convention).
+    Page indices are 0-based (fitz convention).
     """
     doc = fitz.open(pdf_path)
     pages = []
@@ -67,18 +67,12 @@ def clean_text(pages: List[Page]) -> List[Page]:
     cleaned = []
 
     for page_num, text in pages:
-        # rejoin hyphenated line-broken words: "compu-\nter" → "computer"
         text = re.sub(r'www\.it-ebooks\.info', '', text)
-        # Fix hyphenated line breaks that split words
         text = re.sub(r'-\n', '', text)
-        # Remove form feed characters (page breaks)
         text = re.sub(r'\x0c', '', text)
-        # Keep only printable ASCII + newlines and tabs
         text = re.sub(r'[^\x20-\x7E\n\t]', '', text)
-        # Normalize excessive newlines to double newline (paragraph breaks)
-        text = re.sub(r'\n{3,}','\n\n', text)
-        # Collapse multiple spaces/tabs to single space
-        text = re.sub(r'[ \t]{2,}',' ', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r'[ \t]{2,}', ' ', text)
         cleaned.append((page_num, text))
 
     return cleaned
@@ -102,10 +96,16 @@ def chunk_text(
     then slide a window across it. This preserves overlap
     across page boundaries. Each chunk records the page
     it started on.
+
+    chunk_id is namespaced as "{slug}:{n}" to guarantee
+    global uniqueness across all books. This is critical
+    for correct RRF deduplication in multi-book retrieval —
+    a bare integer counter restarts at 0 for every book,
+    causing silent chunk collisions in the RRF merge step.
     """
     stride = chunk_size - overlap
     chunks = []
-    chunk_id = 0
+    local_id = 0
 
     # Build global token stream + page map
     all_tokens = []
@@ -131,10 +131,10 @@ def chunk_text(
             "book": book,
             "slug": slug,
             "page": start_page,
-            "chunk_id": chunk_id
+            "chunk_id": f"{slug}:{local_id}"  # globally unique across all books
         })
 
-        chunk_id += 1
+        local_id += 1
 
     print(f"  Created {len(chunks)} chunks.")
     return chunks
@@ -151,11 +151,25 @@ def build_index(
 ) -> faiss.Index:
     """
     Embed all chunks and build a FAISS index.
-    - Uses IndexIVFFlat for large datasets (>= 100 chunks)
-    - Falls back to IndexFlatIP for small datasets
-    - nprobe set to max(1, nlist // 10) for reasonable recall
-    - Training uses a random sample encoded in one pass (not all vectors)
-    - Adding vectors is streamed batch-by-batch to avoid OOM at scale
+
+    Index type selection:
+    - IndexFlatIP for small datasets (< 100 chunks): exact search, no training needed
+    - IndexIVFFlat for larger datasets: Voronoi clustering, 10-100x faster at scale,
+      <5% accuracy loss when nprobe is tuned correctly
+
+    nprobe controls how many Voronoi clusters are searched at query time.
+    Formula: search all clusters if nlist <= 20 (small index, no speed penalty),
+    otherwise nlist // 4 (good recall / speed tradeoff for larger indices).
+
+    nprobe IS serialized by faiss.write_index / faiss.read_index, so this
+    value is set once here at build time and correctly restored on load.
+    Do NOT override it in retriever.py.
+
+    Two-pass build (memory safety):
+    - Pass 1: encode a random sample for training only, then free those embeddings
+    - Pass 2: stream all chunks in batches of batch_size, add to trained index
+    Random sampling for training prevents biased centroids from early-chapter
+    topic clustering (first N chunks are all from the same section of the book).
     """
     np.random.seed(42)
     total = len(chunks)
@@ -183,14 +197,17 @@ def build_index(
         return index
 
     # --- IVFFlat for larger datasets ---
+    # nlist formula:
+    # - sqrt(total): standard heuristic for cluster count
+    # - total // 39: FAISS hard requirement — training needs >= 39 * nlist vectors
+    #   (39 from FAISS source code, not the commonly cited 30)
     nlist = max(1, min(int(np.sqrt(total)), total // 39))
     print(f"  nlist: {nlist}")
 
     quantizer = faiss.IndexFlatIP(dim)
     index = faiss.IndexIVFFlat(quantizer, dim, nlist, faiss.METRIC_INNER_PRODUCT)
 
-    # Pass 1 — encode a random sample for training only
-    # Must happen before index.add(). FAISS needs ~39x nlist vectors minimum.
+    # Pass 1 — random sample for training
     sample_size = min(total, nlist * 40)
     sample_indices = np.random.choice(total, size=sample_size, replace=False)
     sample_texts = [all_texts[i] for i in sample_indices]
@@ -206,9 +223,9 @@ def build_index(
 
     print("  Training index...")
     index.train(train_embeddings)
-    del train_embeddings  # free memory before streaming pass
+    del train_embeddings  # free before streaming pass
 
-    # Pass 2 — stream all chunks in batches, add to trained index
+    # Pass 2 — stream all chunks into trained index
     print("  Adding vectors (streaming)...")
     for i in range(0, total, batch_size):
         batch_texts = all_texts[i:i + batch_size]
@@ -225,9 +242,10 @@ def build_index(
         if i % (batch_size * 50) == 0:
             print(f"    {min(i + batch_size, total)}/{total} chunks added...")
 
-    # nprobe: how many clusters searched at query time
-    # Default of 1 gives terrible recall. nlist // 10 is a good tradeoff.
-    index.nprobe = max(1, nlist // 10)
+    # nprobe: search all clusters for small indices (no speed cost),
+    # nlist // 4 for larger ones (good recall / speed tradeoff).
+    # This value IS persisted by faiss.write_index — set once here, never override on load.
+    index.nprobe = nlist if nlist <= 20 else max(1, nlist // 4)
 
     print(f"  nprobe set to: {index.nprobe}")
     print("  Index built.")
@@ -256,14 +274,11 @@ def save_book(
     base_path = os.path.join("store", slug)
     os.makedirs(base_path, exist_ok=True)
 
-    # FAISS index
     faiss.write_index(index, os.path.join(base_path, "faiss.index"))
 
-    # Chunks
     with open(os.path.join(base_path, "chunks.json"), "w", encoding="utf-8") as f:
         json.dump(chunks, f, ensure_ascii=False, indent=2)
 
-    # Meta
     meta = {
         "title": book,
         "author": author,
@@ -297,7 +312,6 @@ def update_registry(meta: Dict) -> None:
     else:
         registry = []
 
-    # Remove existing entry for this slug (deduplication)
     registry = [r for r in registry if r["slug"] != meta["slug"]]
 
     registry.append({
@@ -331,10 +345,9 @@ def main():
     print(f"\nIngesting: '{args.name}' by {args.author}")
     print(f"Slug: {slug}\n")
 
-    # Load model once — tokenizer is attached as model.tokenizer
     print("Loading model...")
     model = SentenceTransformer("BAAI/bge-base-en-v1.5")
-    tokenizer = model.tokenizer  # no separate AutoTokenizer load needed
+    tokenizer = model.tokenizer
 
     print("Extracting PDF...")
     raw_pages = load_and_extract(args.pdf, args.start_page, args.end_page)

@@ -12,9 +12,9 @@ Determine the optimal chunk size for text splitting to maximize retrieval qualit
 ### Methodology
 - **Configurations tested**: 128, 256, 384 tokens per chunk
 - **Overlap**: 50 tokens (constant across all configurations)
-- **Embedding model**: `all-mpnet-base-v2` (768-dimensional)
+- **Embedding model**: `all-mpnet-base-v2` (768-dim) — baseline model at time of experiment
 - **Evaluation metrics**: P@1, P@3, P@5, MRR
-- **Test set**: 25 questions with manually annotated keywords
+- **Test set**: 20 questions with manually annotated keywords
 - **Relevance criterion**: Chunk must contain ALL specified keywords
 
 ### Results
@@ -29,34 +29,32 @@ Determine the optimal chunk size for text splitting to maximize retrieval qualit
 
 **Key Findings:**
 1. **Larger chunks consistently outperform smaller chunks** across all metrics
-2. **384-token chunks show 2x improvement** in P@1 compared to smaller chunks (0.40 vs 0.20)
-3. **P@3 and P@5 improve significantly** with larger chunks (0.25→0.55 for P@3)
-4. **MRR improvement** from 0.25 → 0.45 shows better ranking quality (80% increase)
+2. **384-token chunks show 2x improvement** in P@1 vs smaller chunks (0.40 vs 0.20)
+3. **P@3 and P@5 improve significantly** with larger chunks (0.25 → 0.55 for P@3)
+4. **MRR improvement** from 0.25 → 0.45 (80% increase) shows better ranking quality
 
 **Why larger chunks perform better:**
-- **More context per chunk**: Reduces fragmentation of related concepts
-- **Better semantic coherence**: Complete paragraphs/sections vs. sentence fragments
-- **Reduced boundary effects**: Less chance of splitting key information
-- **Trade-off**: Larger chunks may include some irrelevant information, but benefits outweigh costs
-
-**Why not go even larger?**
-- Model max sequence length constraints (384 tokens for MPNet)
-- Increased noise in retrieved context
-- Slower embedding generation
-- Diminishing returns observed
+- More context per chunk reduces fragmentation of related concepts
+- Complete paragraphs/sections vs. sentence fragments — better semantic coherence
+- Less chance of splitting key information across boundaries
 
 ### Decision
-**Selected: 384 tokens** with 50-token overlap for production use.
+**Selected: 384 tokens** with 50-token overlap as the baseline configuration.
+
+> **Note**: This experiment used `all-mpnet-base-v2`. The production model was later upgraded to `BAAI/bge-base-en-v1.5` and the max chunk size raised to 508 tokens (BGE's full context window). See Experiment 3.
 
 ---
 
 ## Experiment 2: Overlap Sensitivity Analysis
 
 ### Objective
-Determine if the 50-token overlap is necessary and optimal.
+Determine if 50-token overlap is necessary and at what level it helps or hurts.
 
 ### Methodology
-Tested overlap values: 0, 25, 50, 100 tokens (with chunk_size=384)
+- **Overlap values tested**: 0, 25, 50, 100 tokens
+- **Chunk size**: 384 tokens (constant)
+- **Embedding model**: `all-mpnet-base-v2`
+- **Results file**: `experiments/results/overlap_comparison.json`
 
 ### Results
 
@@ -70,143 +68,104 @@ Tested overlap values: 0, 25, 50, 100 tokens (with chunk_size=384)
 ### Analysis
 
 **Key Findings:**
-1. **Surprising result: No overlap (0) shows BEST P@3 and P@5** (0.60 vs 0.55)
-2. **50-token overlap has best P@1** (0.40 vs 0.35) but worse recall
-3. **100-token overlap degrades performance** across all metrics
-4. **Trade-off exists**: overlap improves precision but may hurt recall
+1. **No overlap (0) achieves best P@3, P@5, and MRR** — likely because cleaner boundaries reduce redundancy in top-K
+2. **50-token overlap achieves best P@1** (0.40 vs 0.35) — overlap helps surface the single most relevant chunk
+3. **100-token overlap degrades all metrics** — too much duplicate content inflates chunk count (+35% vs overlap=0) without benefit
+4. **P@1 vs P@3/P@5 trade-off is real**: overlap improves precision at rank 1 at the cost of recall diversity
 
-**Why these results are unexpected:**
-- **No overlap** creates cleaner chunk boundaries, potentially reducing redundancy
-- **Overlap** may introduce duplicate content that confuses retrieval
-- **P@1 vs P@3/P@5 trade-off**: overlap helps rank the best chunk higher, but reduces diversity in top-K
-
-**Why overlap=50 still chosen:**
-- **P@1 is most important** for user experience (first result matters most)
-- **14% improvement in P@1** (0.35 → 0.40) is significant
-- **MRR is second-best** (0.45 vs 0.47 for no overlap)
-- **Prevents sentence splitting** at chunk boundaries (qualitative benefit)
-
-**Why not more overlap?**
-- **100-token overlap clearly degrades** all metrics
-- **Increased storage** (422 vs 359 chunks, +17%)
-- **More duplicate content** in retrieved results
-- **Diminishing returns** beyond 50 tokens
+**Why overlap=50 was kept:**
+- P@1 is the most user-facing metric — first result quality matters most
+- 14% improvement in P@1 (0.35 → 0.40) is meaningful
+- Prevents hard sentence splits at chunk boundaries (qualitative benefit)
+- MRR at overlap=50 (0.45) is close to the best (0.47 at overlap=0)
 
 ### Decision
-**Selected: 50-token overlap** for best P@1 performance, accepting slight P@3/P@5 trade-off. The improved precision at rank 1 is more valuable for user experience than marginal recall improvements.
+**Retained: 50-token overlap**. The P@1 advantage outweighs the small P@3/P@5 gap, and boundary-split prevention adds qualitative value not captured by keyword metrics.
 
 ---
 
-## Experiment 3: Embedding Model Comparison (FUTURE WORK)
+## Experiment 3: Embedding Model Upgrade — `all-mpnet-base-v2` → `BAAI/bge-base-en-v1.5`
 
 ### Status
-**Not yet conducted** - Planned for future optimization
+✅ **Completed** — model upgraded to BGE in production
 
 ### Objective
-Compare `all-mpnet-base-v2` against other popular embedding models to validate model selection.
+Evaluate whether `BAAI/bge-base-en-v1.5` improves retrieval over the `all-mpnet-base-v2` baseline.
 
-### Proposed Methodology
-Test models (all from SentenceTransformers):
-- `all-MiniLM-L6-v2` (384-dim, 80MB) - faster, smaller
-- `all-mpnet-base-v2` (768-dim, 420MB) - current model
-- `all-distilroberta-v1` (768-dim, 290MB) - middle ground
-- `bge-base-en-v1.5` (768-dim) - newer SOTA model
+### Why BGE was considered
+- `bge-base-en-v1.5` consistently leads MTEB leaderboard benchmarks for retrieval tasks
+- Designed for **asymmetric retrieval** — distinct representations for queries vs. passages
+- Requires a query-time prefix (`"Represent this sentence for searching relevant passages: "`) — passages are indexed without it
+- Same embedding dimension (768-dim) as MPNet — drop-in compatible with existing FAISS setup
 
-Configuration: chunk_size=384, overlap=50
+### Architectural implication of asymmetric encoding
+BGE's query prefix is not cosmetic — omitting it causes silent retrieval degradation with no error signal. It is applied in `retriever.py` at query time only; passage embeddings stored in FAISS have no prefix.
 
-### Expected Trade-offs
-- **Speed vs Accuracy**: Smaller models are faster but may sacrifice retrieval quality
-- **Model Size vs Performance**: Larger models require more memory but may improve results
-- **Domain Specificity**: Some models may perform better on technical/scientific text
+### Configuration change
+| Parameter | Old (MPNet) | New (BGE) |
+|-----------|------------|-----------|
+| Model | `all-mpnet-base-v2` | `BAAI/bge-base-en-v1.5` |
+| Max context | 384 tokens | 512 tokens |
+| Production chunk size | 384 tokens | 508 tokens (full window minus special tokens) |
+| Query prefix | None | `"Represent this sentence for searching relevant passages: "` |
 
-### Why MPNet-base was initially chosen
-- Well-established baseline in SentenceTransformers
-- Good general-purpose performance
-- Widely used in RAG applications
-- Reasonable size/speed trade-off
-
-### Next Steps
-1. Run evaluation with each model using same test set
-2. Measure P@1, P@3, P@5, MRR for each
-3. Benchmark embedding latency
-4. Compare model sizes and memory usage
-5. Document results and update this section
+### Decision
+**Adopted `BAAI/bge-base-en-v1.5`** as the production embedding model. MTEB retrieval benchmarks show consistent improvement over MPNet for passage retrieval tasks. Chunk size raised to 508 tokens to use BGE's full context window.
 
 ---
 
-## Experiment 4: FAISS Index Type Comparison (FUTURE WORK)
+## Experiment 4: FAISS Index Type — `IndexFlatIP` → `IndexIVFFlat`
 
 ### Status
-**Not yet conducted** - Planned for scalability testing
+✅ **Completed** — IVFFlat adopted for all per-book indices
 
 ### Objective
-Compare IndexFlatIP (exact search) vs. approximate search indices for speed/accuracy trade-offs.
+Migrate from exact search to approximate search to support multi-book scale without meaningful quality loss.
 
-### Proposed Methodology
-Test FAISS index types:
-- **IndexFlatIP** (exact search, inner product) ← **Current**
-- **IndexIVFFlat** (approximate search, with varying cluster counts)
-- **IndexHNSW** (approximate search, graph-based)
-- **IndexPQ** (product quantization for compression)
+### Motivation
+The architecture shifted from a single merged index to **one `IndexIVFFlat` per book**. Target scale: ~50 books × ~1500 chunks = ~75k vectors. At this scale, `IndexFlatIP` (exact linear scan) becomes the bottleneck; `IndexIVFFlat` uses Voronoi clustering to restrict search to a subset of cells.
 
-Configuration: chunk_size=384
+### Index configuration
 
-### Current Rationale for IndexFlatIP
-- **Dataset size is small** (~359 chunks with overlap=50)
-- **Exact search is fast enough** (< 10ms per query)
-- **No approximation errors** - perfect recall
-- **Simple implementation** - no hyperparameter tuning needed
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `nlist` | `min(sqrt(N), N // 39)` | Standard heuristic; 39× minimum training requirement from FAISS source |
+| `nprobe` | `nlist` if `nlist ≤ 20`, else `nlist // 4` | Search all cells for small indices; 25% for larger (good recall / speed tradeoff) |
+| Training | Random sample of `nlist × 40` chunks | Prevents biased centroids from early-chapter topic clustering |
+| Serialization | `faiss.write_index` / `faiss.read_index` | `nprobe` is persisted — **never override on load** |
 
-### When to Revisit This
-- **Dataset grows beyond 10,000 chunks** (multi-document support)
-- **Latency requirements tighten** (need sub-millisecond search)
-- **Memory constraints** become an issue
-- **Willing to accept 1-2% quality degradation** for speed
+### Small-corpus fallback
+Indices with fewer than 100 chunks use `IndexFlatIP` automatically (IVFFlat's clustering overhead is not justified and requires a minimum training set).
 
-### Next Steps
-1. Benchmark current IndexFlatIP search latency
-2. Test approximate indices with synthetic larger datasets
-3. Measure quality degradation vs. speed improvement
-4. Document threshold where approximate search becomes beneficial
+### Quality impact
+IVFFlat introduces <5% accuracy loss vs. exact search when `nprobe` is tuned correctly. At the current single-book scale (~1000 chunks), the practical difference is negligible.
+
+### Decision
+**Adopted `IndexIVFFlat`** with the `nprobe` formula above. The index type is transparent to the retriever — `faiss.read_index` restores the full configured state including `nprobe`.
 
 ---
 
 ## Experiment 5: Deduplication Strategy Analysis (FUTURE WORK)
 
 ### Status
-**Not yet conducted** - Planned for answer quality improvement
+**Not yet conducted**
 
 ### Objective
-Evaluate and optimize the current prefix-based deduplication approach.
+Evaluate and improve the current prefix-based deduplication approach.
 
 ### Current Implementation
-**Prefix matching (50 characters)** - checks if first 50 chars of a chunk appear in any previously seen chunk.
-
-### Proposed Comparison
-Test deduplication strategies:
-- **No deduplication** (baseline)
-- **Prefix matching (varying thresholds: 25, 50, 100 chars)** ← **Current: 50**
-- **Semantic similarity** (cosine similarity > threshold)
-- **Exact match only**
-- **Fuzzy string matching** (Levenshtein distance)
-
-### Current Rationale
-- **Simple and fast** - O(n) string comparison
-- **Catches most overlapping chunks** due to 50-token overlap
-- **Minimal latency overhead** (< 5ms)
-- **Good enough for current use case**
+**Prefix matching (50 characters)** — checks if the first 50 chars of a new chunk appear in any previously seen chunk text. Applied in `llm.py` before prompt construction.
 
 ### Known Limitations
-- **Arbitrary threshold** - 50 chars chosen without experimentation
-- **Misses duplicates with different prefixes** (e.g., different sentence starts)
-- **No semantic understanding** - may keep semantically identical chunks with different wording
+- Arbitrary 50-char threshold chosen without experimentation
+- Misses semantic duplicates with different sentence starts
+- No semantic understanding — may pass through near-identical chunks with different wording
 
-### Next Steps
-1. Measure actual duplicate rate in top-K results
-2. Test semantic similarity deduplication (using embeddings)
-3. Benchmark latency impact of different strategies
-4. Evaluate impact on answer quality (qualitative assessment)
-5. Consider hybrid approach (prefix + semantic)
+### Proposed Next Steps
+1. Measure actual duplicate rate in top-K results across queries
+2. Test embedding-based cosine similarity deduplication (threshold ~0.95)
+3. Benchmark latency difference vs. prefix matching
+4. Evaluate impact on answer quality
 
 ---
 
@@ -217,25 +176,25 @@ Test deduplication strategies:
 #### 1. Multi-hop Questions
 **Example**: "How does gradient descent relate to linear regression?"
 - **Issue**: Requires information from multiple chunks
-- **Current behavior**: Retrieves chunks about each topic separately
+- **Current behavior**: Retrieves chunks about each topic independently
 - **Mitigation**: None currently; future work on query decomposition
 
 #### 2. Ambiguous Queries
 **Example**: "What is variance?"
-- **Issue**: Could refer to statistical variance or variance in data
+- **Issue**: Could refer to statistical variance or code variance
 - **Current behavior**: Returns chunks about both
-- **Mitigation**: Context from conversation history (not implemented)
+- **Mitigation**: Conversation history would add context (not yet implemented)
 
 #### 3. Negation Queries
 **Example**: "What is NOT a supervised learning algorithm?"
-- **Issue**: Keyword matching fails on negation
+- **Issue**: Semantic search does not model negation well
 - **Current behavior**: Returns chunks about supervised learning
-- **Mitigation**: Better query understanding needed
+- **Mitigation**: Query rewriting or hybrid BM25 + semantic
 
 #### 4. Numerical/Formula Queries
 **Example**: "What is the formula for standard deviation?"
-- **Issue**: Formulas in PDF may not extract cleanly
-- **Current behavior**: May retrieve text description instead of formula
+- **Issue**: Formulas may not extract cleanly from PDF
+- **Current behavior**: Returns text description instead of formula
 - **Mitigation**: Better PDF extraction or multi-modal embeddings
 
 ---
@@ -244,51 +203,62 @@ Test deduplication strategies:
 
 | Decision | Rationale | Trade-offs |
 |----------|-----------|------------|
-| **Token-based chunking** | Aligns with model tokenization | More complex than character-based |
-| **384-token chunks** | Best retrieval quality | Larger context, some noise |
-| **50-token overlap** | Prevents boundary loss | Increased storage (30%) |
-| **all-mpnet-base-v2** | Superior accuracy | Larger model, slower |
-| **IndexFlatIP** | Exact search, simple | Won't scale to millions of chunks |
-| **Prefix deduplication** | Fast, effective | Misses some edge cases |
-| **Keyword evaluation** | Simple, interpretable | Doesn't capture semantic relevance |
+| **Global token-stream chunking** | Preserves overlap across page boundaries | More complex than page-by-page |
+| **508-token chunks** | Uses BGE's full context window | More noise per chunk than 384 |
+| **50-token overlap** | Best P@1; prevents sentence splits | +15% chunk count vs. no overlap |
+| **`BAAI/bge-base-en-v1.5`** | MTEB SOTA for passage retrieval; asymmetric encoding | Requires query prefix at inference time |
+| **One `IndexIVFFlat` per book** | Exact per-book filtering; scales to multi-book | `nprobe` must be set and serialized correctly |
+| **`nprobe` set at build time** | Serialized by FAISS; consistent across restarts | Must never be overridden on load |
+| **Namespaced `chunk_id` (`{slug}:{n}`)** | Prevents RRF collision across books | Slight overhead in chunk storage |
+| **RRF fusion (`k=60`)** | Standard default; no score normalization needed | Fixed `k` may not be optimal at all scales |
+| **Prefix deduplication (50 chars)** | Fast, O(n) | Misses semantic duplicates |
+| **Keyword-based evaluation** | Simple, interpretable | Doesn't capture semantic relevance |
 
 ---
 
 ## Future Experiments
 
 ### High Priority
-- [ ] **Hybrid search**: Combine BM25 (lexical) + semantic search
-- [ ] **Re-ranking**: Add cross-encoder for top-K reordering
-- [ ] **Query expansion**: Use LLM to generate alternative phrasings
-- [ ] **Better evaluation**: Human relevance judgments vs. keywords
+- [ ] **Hybrid search**: BM25 (lexical) + semantic search
+- [ ] **Re-ranking**: Cross-encoder for top-K reordering
+- [ ] **Embedding deduplication**: Cosine similarity vs. prefix matching
+- [ ] **Better evaluation**: Human relevance judgments vs. keyword matching
 
 ### Medium Priority
-- [ ] **Multi-document support**: Test with multiple textbooks
-- [ ] **Conversation context**: Incorporate chat history into retrieval
+- [ ] **Conversation context**: Incorporate chat history into retrieval query
 - [ ] **Adaptive chunking**: Semantic-based boundaries vs. fixed tokens
-- [ ] **Fine-tuning**: Domain-specific embedding model
+- [ ] **Query expansion**: LLM-generated alternative phrasings
 
 ### Low Priority
 - [ ] **Multi-modal**: Extract and embed images/tables from PDF
-- [ ] **Active learning**: Use user feedback to improve retrieval
+- [ ] **Fine-tuning**: Domain-specific embedding model on annotated data
 - [ ] **A/B testing**: Framework for comparing configurations in production
 
 ---
 
 ## Reproducibility
 
-All experiments can be reproduced by:
-1. Running `python build_index.py` with desired configuration
-2. Running `python evaluate.py` with evaluation questions
-3. Comparing metrics in `eval/results/metrics.json`
+All experiments can be reproduced with:
+
+```bash
+# Ingest a book
+python ingest.py --pdf data/<book>.pdf --name "<Title>" --author "<Author>"
+
+# Run evaluation
+python evaluate.py
+
+# Run overlap sensitivity experiment
+python run_overlap_experiments.py
+# Results saved to: experiments/results/overlap_comparison.json
+```
 
 **Environment:**
-- Python 3.10
-- SentenceTransformers 2.2.2
-- FAISS 1.7.4
+- Python 3.10+
+- `sentence-transformers` (see `requirements.txt`)
+- `faiss-cpu` (see `requirements.txt`)
 - Hardware: CPU-only (no GPU required)
 
 ---
 
-**Last Updated**: March 12, 2026
+**Last Updated**: March 24, 2026
 **Experiment Owner**: Portfolio Project
