@@ -327,6 +327,36 @@ def update_registry(meta: Dict) -> None:
     print(f"  Registry updated. Total books: {len(registry)}")
 
 
+def ingest_pdf(pdf_path, name, author, start_page=None, end_page=None):
+    slug = generate_slug(name)
+    print(f"\nIngesting: '{name}' by {author}")
+    print(f"Slug: {slug}\n")
+
+    print('Loading model...')
+    model = SentenceTransformer("BAAI/bge-base-en-v1.5")
+    tokenizer = model.tokenizer 
+
+    print('Extracting PDF...')
+    raw_pages = load_and_extract(pdf_path, start_page, end_page)
+
+    print("Cleaning text...")
+    cleaned_pages = clean_text(raw_pages)
+ 
+    print("Chunking...")
+    chunks = chunk_text(cleaned_pages, name, slug, tokenizer)
+ 
+    print("Building index...")
+    index = build_index(chunks, model)
+ 
+    print("Saving...")
+    meta = save_book(chunks, index, slug, name, author)
+ 
+    print("Updating registry...")
+    update_registry(meta)
+ 
+    print(f"\nDone. '{name}' is ready to query.\n")
+    return meta   
+
 # ----------------------------
 # Main
 # ----------------------------
@@ -341,33 +371,7 @@ def main():
 
     args = parser.parse_args()
 
-    slug = generate_slug(args.name)
-    print(f"\nIngesting: '{args.name}' by {args.author}")
-    print(f"Slug: {slug}\n")
-
-    print("Loading model...")
-    model = SentenceTransformer("BAAI/bge-base-en-v1.5")
-    tokenizer = model.tokenizer
-
-    print("Extracting PDF...")
-    raw_pages = load_and_extract(args.pdf, args.start_page, args.end_page)
-
-    print("Cleaning text...")
-    cleaned_pages = clean_text(raw_pages)
-
-    print("Chunking...")
-    chunks = chunk_text(cleaned_pages, args.name, slug, tokenizer)
-
-    print("Building index...")
-    index = build_index(chunks, model)
-
-    print("Saving...")
-    meta = save_book(chunks, index, slug, args.name, args.author)
-
-    print("Updating registry...")
-    update_registry(meta)
-
-    print(f"\nDone. '{args.name}' is ready to query.\n")
+    ingest_pdf(args.pdf, args.name, args.author, args.start_page, args.end_page)
 
 
 if __name__ == "__main__":

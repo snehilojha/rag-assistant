@@ -3,11 +3,17 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File, Form
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
 from retriever import retrieve, load_all_indices
+from ingest import ingest_pdf
 from llm import ask_llm
+import tempfile
+import os
+import json
+import shutil
 
 import openai
 
@@ -63,6 +69,88 @@ async def get_books():
         for data in app_state["indices"].values()
     ]
 
+@app.post("/ingest")
+async def ingest_book(
+    file: UploadFile  = File(...),
+    name: str = Form(...),
+    author: str = Form(...),):
+    """
+    Upload a PDF, ingest it into the RAG store, and reload in-memory indices.
+    """
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="Book title cannot be empty.")
+
+    if not author.strip():
+        raise HTTPException(status_code=400, detail="Author cannot be empty.")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file was uploaded.")
+    
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+    
+    temp_path = None
+
+    try:
+        suffix = os.path.splitext(file.filename)[1] or ".pdf"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            temp_path = tmp.name
+            content = await file.read()
+            tmp.write(content)
+
+        meta = ingest_pdf(temp_path, name, author)
+
+        app_state["indices"] = load_all_indices("store")
+
+        return {
+            "message": "PDF uploaded and indexed successfully.",
+            "title" : meta["title"],
+            "author": meta['author'],
+            "slug" : meta["slug"],
+            "total_chunks": meta["total_chunks"],
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.delete("/books/{slug}")
+async def delete_book(slug: str):
+    """Delete a stored book by slug, refresh the registry, and reload indices."""
+    if not slug.strip():
+        raise HTTPException(status_code=400, detail="Slug cannot be empty.")
+
+    base_path = os.path.join("store", slug)
+    registry_path = os.path.join("store", "registry.json")
+
+    if not os.path.isdir(base_path):
+        raise HTTPException(status_code=404, detail=f"Book '{slug}' not found.")
+
+    try:
+        if os.path.exists(registry_path):
+            with open(registry_path, "r", encoding="utf-8") as f:
+                registry = json.load(f)
+        else:
+            registry = []
+
+        registry = [entry for entry in registry if entry.get("slug") != slug]
+
+        with open(registry_path, "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=2)
+
+        shutil.rmtree(base_path)
+
+        app_state["indices"] = load_all_indices("store")
+
+        return {"message": "Book deleted successfully.", "slug": slug}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
 
 @app.post("/ask")
 async def ask(question: Question):

@@ -4,8 +4,10 @@ import remarkGfm from "remark-gfm";
 
 const API_URL = "http://localhost:8000/ask";
 const BOOKS_URL = "http://localhost:8000/books";
+const INGEST_URL = "http://localhost:8000/ingest";
+const DELETE_BOOK_URL = "http://localhost:8000/books";
 
-function BookSelector({ books, selected, onChange }) {
+function BookSelector({ books, selected, onChange, onDelete }) {
   /**
    * Pill/chip selector for filtering which books to query.
    * selected: array of slugs. Empty array = all books.
@@ -72,19 +74,36 @@ function BookSelector({ books, selected, onChange }) {
       {books.map((book) => {
         const active = selected.includes(book.slug);
         return (
-          <button
+          <div
             key={book.slug}
-            onClick={() => toggle(book.slug)}
-            title={`${book.title} — ${book.author}`}
-            style={{
-              ...chipBase,
-              borderColor: active ? "#64ffda" : "#30363d",
-              color: active ? "#64ffda" : "#484f58",
-              background: active ? "rgba(100,255,218,0.07)" : "none",
-            }}
+            style={{ display: "flex", alignItems: "center", gap: "6px" }}
           >
-            {book.title}
-          </button>
+            <button
+              onClick={() => toggle(book.slug)}
+              title={`${book.title} — ${book.author}`}
+              style={{
+                ...chipBase,
+                borderColor: active ? "#64ffda" : "#30363d",
+                color: active ? "#64ffda" : "#484f58",
+                background: active ? "rgba(100,255,218,0.07)" : "none",
+              }}
+            >
+              {book.title}
+            </button>
+            <button
+              onClick={() => onDelete?.(book.slug, book.title)}
+              title={`Delete ${book.title}`}
+              style={{
+                ...chipBase,
+                padding: "5px 8px",
+                color: "#ff7b72",
+                borderColor: "#30363d",
+                background: "rgba(255,123,114,0.04)",
+              }}
+            >
+              ×
+            </button>
+          </div>
         );
       })}
     </div>
@@ -287,6 +306,12 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [books, setBooks] = useState([]);
   const [selectedBooks, setSelectedBooks] = useState([]);
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadName, setUploadName] = useState("");
+  const [uploadAuthor, setUploadAuthor] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState("");
+  const [uploadError, setUploadError] = useState("");
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -294,18 +319,117 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  const refreshBooks = async () => {
+    try {
+      const res = await fetch(BOOKS_URL);
+      if (!res.ok) {
+        throw new Error(`Failed to load books (${res.status})`);
+      }
+      const data = await res.json();
+      setBooks(data);
+    } catch {
+      /* silently degrade — chips just won't appear */
+    }
+  };
+
   useEffect(() => {
-    fetch(BOOKS_URL)
-      .then((r) => r.json())
-      .then((data) => setBooks(data))
-      .catch(() => {
-        /* silently degrade — chips just won't appear */
-      });
+    refreshBooks();
   }, []);
 
   const handleShowChunks = (chunks) => {
     setDrawerChunks(chunks);
     setDrawerOpen(true);
+  };
+
+  const handleUpload = async () => {
+    setUploadError("");
+    setUploadMessage("");
+
+    if (!uploadFile) {
+      setUploadError("Please choose a PDF file.");
+      return;
+    }
+
+    if (!uploadName.trim()) {
+      setUploadError("Please enter a book title.");
+      return;
+    }
+
+    if (!uploadAuthor.trim()) {
+      setUploadError("Please enter the author name.");
+      return;
+    }
+
+    if (!uploadFile.name.toLowerCase().endsWith(".pdf")) {
+      setUploadError("Only PDF files are allowed.");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", uploadFile);
+    formData.append("name", uploadName.trim());
+    formData.append("author", uploadAuthor.trim());
+
+    setUploading(true);
+
+    try {
+      const res = await fetch(INGEST_URL, {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.detail || `Upload failed (${res.status})`);
+      }
+
+      setUploadMessage(`Uploaded "${data.title}" successfully.`);
+      setUploadFile(null);
+      setUploadName("");
+      setUploadAuthor("");
+
+      await refreshBooks();
+
+      if (data.slug) {
+        setSelectedBooks((prev) => (prev.includes(data.slug) ? prev : [...prev, data.slug]));
+      }
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDeleteBook = async (slug, title) => {
+    setUploadError("");
+    setUploadMessage("");
+
+    const confirmed = window.confirm(
+      `Delete "${title}"? This will remove its index and make it unavailable for search.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${DELETE_BOOK_URL}/${slug}`, {
+        method: "DELETE",
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.detail || `Delete failed (${res.status})`);
+      }
+
+      setUploadMessage(data.message || `Deleted "${title}" successfully.`);
+      setSelectedBooks((prev) => prev.filter((s) => s !== slug));
+      await refreshBooks();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Delete failed.");
+    }
   };
 
   const handleSubmit = async () => {
@@ -479,13 +603,89 @@ export default function App() {
         }}
       >
         <div style={{ maxWidth: "760px", margin: "0 auto" }}>
-        {books.length > 0 && (
-          <BookSelector
-            books={books}
-            selected={selectedBooks}
-            onChange={setSelectedBooks}
-          />
-        )}
+          <div
+            style={{
+              marginBottom: "14px",
+              padding: "16px",
+              background: "#161b22",
+              border: "1px solid #30363d",
+              borderRadius: "14px",
+              display: "grid",
+              gap: "12px",
+            }}
+          >
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "10px", color: "#64ffda", letterSpacing: "1px", textTransform: "uppercase" }}>
+              Upload a PDF book
+            </div>
+
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+              style={{ color: "#c9d1d9", fontFamily: "'IBM Plex Sans', sans-serif" }}
+            />
+
+            <input
+              type="text"
+              value={uploadName}
+              onChange={(e) => setUploadName(e.target.value)}
+              placeholder="Book title"
+              style={{
+                background: "#0d1117",
+                color: "#c9d1d9",
+                border: "1px solid #30363d",
+                borderRadius: "8px",
+                padding: "10px 12px",
+                fontFamily: "'IBM Plex Sans', sans-serif",
+              }}
+            />
+
+            <input
+              type="text"
+              value={uploadAuthor}
+              onChange={(e) => setUploadAuthor(e.target.value)}
+              placeholder="Author"
+              style={{
+                background: "#0d1117",
+                color: "#c9d1d9",
+                border: "1px solid #30363d",
+                borderRadius: "8px",
+                padding: "10px 12px",
+                fontFamily: "'IBM Plex Sans', sans-serif",
+              }}
+            />
+
+            <button
+              onClick={handleUpload}
+              disabled={uploading}
+              style={{
+                background: uploading ? "#21262d" : "#64ffda",
+                color: uploading ? "#8b949e" : "#010409",
+                border: "none",
+                borderRadius: "8px",
+                padding: "10px 14px",
+                cursor: uploading ? "not-allowed" : "pointer",
+                fontFamily: "'Space Mono', monospace",
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                fontSize: "10px",
+              }}
+            >
+              {uploading ? "Uploading..." : "Upload and index"}
+            </button>
+
+            {uploadMessage && <div style={{ color: "#7ee787", fontSize: "13px" }}>{uploadMessage}</div>}
+            {uploadError && <div style={{ color: "#ff7b72", fontSize: "13px" }}>{uploadError}</div>}
+          </div>
+
+          {books.length > 0 && (
+            <BookSelector
+              books={books}
+              selected={selectedBooks}
+              onChange={setSelectedBooks}
+              onDelete={handleDeleteBook}
+            />
+          )}
         </div>
         <div
           style={{
