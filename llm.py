@@ -11,9 +11,7 @@ import os
 from openai import OpenAI
 from dotenv import load_dotenv
 
-load_dotenv()
-
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+load_dotenv(override=True)
 MODEL = "gpt-4o-mini"
 
 
@@ -80,6 +78,13 @@ def ask_llm(query: str, chunks: list[dict]) -> str:
 
     chunks = deduplicate(chunks)
     prompt = build_prompt(query, chunks)
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY is not set")
+
+    # Build the client at call time so a fresh server restart picks up the
+    # current .env value instead of a stale import-time value.
+    client = OpenAI(api_key=api_key)
 
     response = client.chat.completions.create(
         model=MODEL,

@@ -326,14 +326,24 @@ export default function App() {
         }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.detail || `Backend error (${res.status})`);
+      }
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: data.answer, chunks: data.chunks },
       ]);
-    } catch {
+    } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Failed to reach the backend. Make sure the FastAPI server is running on port 8000.", chunks: [] },
+        {
+          role: "assistant",
+          content:
+            err instanceof Error
+              ? err.message
+              : "Failed to reach the backend. Make sure the FastAPI server is running on port 8000.",
+          chunks: [],
+        },
       ]);
     } finally {
       setLoading(false);
@@ -433,7 +443,7 @@ export default function App() {
             textTransform: "uppercase",
           }}
         >
-          RAG · all-mpnet-base-v2 · chunk_384
+          RAG · bge-base-en-v1.5 · IVFFlat
         </span>
       </div>
 

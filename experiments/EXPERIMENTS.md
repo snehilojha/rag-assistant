@@ -87,7 +87,7 @@ Determine if 50-token overlap is necessary and at what level it helps or hurts.
 ## Experiment 3: Embedding Model Upgrade — `all-mpnet-base-v2` → `BAAI/bge-base-en-v1.5`
 
 ### Status
-✅ **Completed** — model upgraded to BGE in production
+**Completed** — model upgraded to BGE in production
 
 ### Objective
 Evaluate whether `BAAI/bge-base-en-v1.5` improves retrieval over the `all-mpnet-base-v2` baseline.
@@ -117,7 +117,7 @@ BGE's query prefix is not cosmetic — omitting it causes silent retrieval degra
 ## Experiment 4: FAISS Index Type — `IndexFlatIP` → `IndexIVFFlat`
 
 ### Status
-✅ **Completed** — IVFFlat adopted for all per-book indices
+**Completed** — IVFFlat adopted for all per-book indices
 
 ### Objective
 Migrate from exact search to approximate search to support multi-book scale without meaningful quality loss.
